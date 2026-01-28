@@ -3,3 +3,8 @@
 *.pyc
 wandb
 checkpoint/*.pth.tr
+# demo artifacts
+demo/output/
+demo/video/*.mp4
+demo/video/*.avi
+demo/video/*.mov

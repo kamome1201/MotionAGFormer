@@ -20,6 +20,12 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.gridspec as gridspec
 
+
+# ---- ---- ---- ---- [changed in 20260128] ---- ---- ---- ----
+from pathlib import Path
+# ---- ---- ---- ---- [changed in 20260128] end ---- ---- ---- ----
+
+
 plt.switch_backend('agg')
 matplotlib.rcParams['pdf.fonttype'] = 42
 matplotlib.rcParams['ps.fonttype'] = 42
@@ -202,9 +208,9 @@ def get_pose3D(video_path, output_dir):
     model = nn.DataParallel(MotionAGFormer(**args)).cuda()
 
     # Put the pretrained model of MotionAGFormer in 'checkpoint/'
-    model_path = sorted(glob.glob(os.path.join('checkpoint', 'motionagformer-b-h36m.pth.tr')))[0]
+    model_path = sorted(glob.glob(os.path.join('checkpoint', 'motionagformer-b-h36m.pth*')))[0]
 
-    pre_dict = torch.load(model_path)
+    pre_dict = torch.load(model_path, map_location='cpu', weights_only=False)
     model.load_state_dict(pre_dict['model'], strict=True)
 
     model.eval()
@@ -325,9 +331,22 @@ if __name__ == "__main__":
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
-    video_path = './demo/video/' + args.video
-    video_name = video_path.split('/')[-1].split('.')[0]
-    output_dir = './demo/output/' + video_name + '/'
+
+# ---- ---- ---- ---- [changed in 20260128] ---- ---- ---- ----
+    # video_path = './demo/video/' + args.video
+    # video_name = video_path.split('/')[-1].split('.')[0]
+    # output_dir = './demo/output/' + video_name + '/'
+
+    v = Path(args.video)
+    if v.is_absolute() or v.exists():
+        video_path = str(v)
+    else:
+        video_path = str(Path("./demo/video") / v)
+
+    video_name = Path(video_path).stem
+    output_dir = str(Path("./demo/output") / video_name / "")
+# ---- ---- ---- ---- [changed in 20260128] end ---- ---- ---- ----
+
 
     get_pose2D(video_path, output_dir)
     get_pose3D(video_path, output_dir)

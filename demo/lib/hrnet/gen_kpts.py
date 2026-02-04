@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument("-v", "--video", type=str, default='camera',
                         help="input video file name")
     parser.add_argument('--gpu', type=str, default='0', help='input video')
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     return args
 

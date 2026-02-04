@@ -264,6 +264,25 @@ def get_pose3D(video_path, output_dir):
         output_3D[:, :, 0, :] = 0
         post_out_all = output_3D[0].cpu().detach().numpy()
         
+        # ==========================================================
+        # [added at 20260203] [PIPELINE ADD] save raw 3D pose for biomechanical pipeline
+        # ==========================================================
+        raw_3d = post_out_all.copy()  # (T, J, 3), before any normalization
+
+        out_npz = os.path.join(
+            output_dir,
+            f"{video_name}_3d_world_raw.npz"
+        )
+
+        np.savez_compressed(
+            out_npz,
+            pose3d_raw=raw_3d
+        )
+
+        print(f"[PIPELINE] saved raw 3D npz -> {out_npz}")
+        print("[PIPELINE] shape:", raw_3d.shape)
+        # ========================================================== end
+
         for j, post_out in enumerate(post_out_all):
             rot =  [0.1407056450843811, -0.1500701755285263, -0.755240797996521, 0.6223280429840088]
             rot = np.array(rot, dtype='float32')

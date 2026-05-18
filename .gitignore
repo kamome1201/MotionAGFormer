@@ -8,3 +8,19 @@ demo/output/
 demo/video/*.mp4
 demo/video/*.avi
 demo/video/*.mov
+
+# local datasets / generated files
+data/
+results/
+checkpoint/
+__pycache__/
+*.pyc
+*.pkl
+*.npy
+*.npz
+*.pt
+*.pth
+*.pth.tr
+*.csv
+logs*.txt
+biomech_eval/

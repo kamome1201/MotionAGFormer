@@ -9,7 +9,7 @@ from torch import optim
 from tqdm import tqdm
 
 from loss.pose3d import loss_mpjpe, n_mpjpe, loss_velocity, loss_limb_var, loss_limb_gt, loss_angle, \
-    loss_angle_velocity
+    loss_angle_velocity, loss_limb_const, loss_limb_sym # ===== ===== ===== [added in 20260325] loss_limb_const, loss_limb_sym を追加
 from loss.pose3d import jpe as calculate_jpe
 from loss.pose3d import p_mpjpe as calculate_p_mpjpe
 from loss.pose3d import mpjpe as calculate_mpjpe
@@ -42,6 +42,8 @@ def parse_args():
     parser.add_argument('--wandb-run-id', default=None, type=str)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--eval-only', action='store_true')
+    parser.add_argument('--lambda_lc', type=float, default=0.0, help='weight for GT-free limb constancy loss') # ===== ===== ===== [added in 20260325]
+    parser.add_argument('--lambda_ls', type=float, default=0.0, help='weight for GT-free limb symmetry loss') # ===== ===== ===== [added in 20260325]
     opts = parser.parse_args()
     return opts
 
@@ -69,6 +71,8 @@ def train_one_epoch(args, model, train_loader, optimizer, device, losses):
         loss_lg = loss_limb_gt(pred, y)
         loss_a = loss_angle(pred, y)
         loss_av = loss_angle_velocity(pred, y)
+        loss_lc = loss_limb_const(pred) # ===== ===== ===== [added in 20260325]
+        loss_ls = loss_limb_sym(pred) # ===== ===== ===== [added in 20260325]
 
         loss_total = loss_3d_pos + \
                     args.lambda_scale * loss_3d_scale + \
@@ -76,7 +80,9 @@ def train_one_epoch(args, model, train_loader, optimizer, device, losses):
                     args.lambda_lv * loss_lv + \
                     args.lambda_lg * loss_lg + \
                     args.lambda_a * loss_a + \
-                    args.lambda_av * loss_av
+                    args.lambda_av * loss_av + \
+                    args.lambda_lc * loss_lc + \
+                    args.lambda_ls * loss_ls # ===== ===== ===== [added in 20260325] "args.lambda_lc * loss_lc + \" + "args.lambda_ls * loss_ls"
 
         losses['3d_pose'].update(loss_3d_pos.item(), batch_size)
         losses['3d_scale'].update(loss_3d_scale.item(), batch_size)
@@ -85,6 +91,8 @@ def train_one_epoch(args, model, train_loader, optimizer, device, losses):
         losses['lg'].update(loss_lg.item(), batch_size)
         losses['angle'].update(loss_a.item(), batch_size)
         losses['angle_velocity'].update(loss_av.item(), batch_size)
+        losses['lc'].update(loss_lc.item(), batch_size) # ===== ===== ===== [added in 20260325]
+        losses['ls'].update(loss_ls.item(), batch_size) # ===== ===== ===== [added in 20260325]
         losses['total'].update(loss_total.item(), batch_size)
 
         loss_total.backward()
@@ -93,6 +101,8 @@ def train_one_epoch(args, model, train_loader, optimizer, device, losses):
 def evaluate(args, model, test_loader, datareader, device):
     print("[INFO] Evaluation")
     results_all = []
+    biomech_pred_clips = [] # ===== ===== ===== [added in 20260326]
+    biomech_gt_clips = [] # ===== ===== ===== [added in 20260326]
     model.eval()
     with torch.no_grad():
         for x, y in tqdm(test_loader):
@@ -170,6 +180,10 @@ def evaluate(args, model, test_loader, datareader, device):
         # Root-relative Errors
         pred = pred - pred[:, 0:1, :]
         gt = gt - gt[:, 0:1, :]
+
+        biomech_pred_clips.append(pred.copy()) # ===== ===== ===== [added in 20260326]
+        biomech_gt_clips.append(gt.copy()) # ===== ===== ===== [added in 20260326]
+
         err1 = calculate_mpjpe(pred, gt)
         jpe = calculate_jpe(pred, gt)
         for joint_idx in range(args.num_joints):
@@ -214,6 +228,24 @@ def evaluate(args, model, test_loader, datareader, device):
     assert round(e1, 4) == round(np.mean(joint_errors), 4), f"MPJPE {e1:.4f} is not equal to mean of joint errors {np.mean(joint_errors):.4f}"
     acceleration_error = np.mean(np.array(final_result_acceleration))
     e2 = np.mean(np.array(final_result_procrustes))
+
+
+    # ===== ===== ===== [added as follows 20260326] ===== ===== =====
+    biomech_pred_clips = np.stack(biomech_pred_clips, axis=0)
+    biomech_gt_clips = np.stack(biomech_gt_clips, axis=0)
+
+    os.makedirs("results", exist_ok=True)
+
+    run_tag = f"{args.name}_lc{args.lambda_lc:g}_ls{args.lambda_ls:g}"
+
+    np.save(os.path.join("results", f"{run_tag}_pred.npy"), biomech_pred_clips)
+    np.save(os.path.join("results", f"{run_tag}_gt.npy"), biomech_gt_clips)
+
+    print(f"[INFO] Saved biomech pred: results/{run_tag}_pred.npy")
+    print(f"[INFO] Saved biomech gt:   results/{run_tag}_gt.npy")
+    # ===== ===== ===== [added as above 20260326] ===== ===== =====
+
+
     print('Protocol #1 Error (MPJPE):', e1, 'mm')
     print('Acceleration error:', acceleration_error, 'mm/s^2')
     print('Protocol #2 Error (P-MPJPE):', e2, 'mm')
@@ -239,13 +271,27 @@ def train(args, opts):
     train_dataset = MotionDataset3D(args, args.subset_list, 'train')
     test_dataset = MotionDataset3D(args, args.subset_list, 'test')
 
+    # ===== ===== ===== [changed as follows 20260507] ===== ===== =====
+    # common_loader_params = {
+    #     'batch_size': args.batch_size,
+    #     'num_workers': opts.num_cpus - 1,
+    #     'pin_memory': True,
+    #     'prefetch_factor': (opts.num_cpus - 1) // 3,
+    #     'persistent_workers': True
+    # }
+    # ===== ===== ===== [changed as follows 20260507] ===== ===== =====
+    num_workers = max(0, opts.num_cpus - 1)
+
     common_loader_params = {
         'batch_size': args.batch_size,
-        'num_workers': opts.num_cpus - 1,
+        'num_workers': num_workers,
         'pin_memory': True,
-        'prefetch_factor': (opts.num_cpus - 1) // 3,
-        'persistent_workers': True
     }
+
+    if num_workers > 0:
+        common_loader_params['prefetch_factor'] = max(1, num_workers // 3)
+    # ===== ===== ===== [changed as above 20260507] ===== ===== =====    
+
     train_loader = DataLoader(train_dataset, shuffle=True, **common_loader_params)
     test_loader = DataLoader(test_dataset, shuffle=False, **common_loader_params)
 
@@ -274,7 +320,14 @@ def train(args, opts):
     if opts.checkpoint:
         checkpoint_path = os.path.join(opts.checkpoint, opts.checkpoint_file if opts.checkpoint_file else "latest_epoch.pth.tr")
         if os.path.exists(checkpoint_path):
-            checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage)
+
+            # checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage) # ===== ===== ===== [changed in 20260326] ===== ===== =====
+
+            checkpoint = torch.load(
+                checkpoint_path,
+                map_location=lambda storage, loc: storage,
+                weights_only=False
+            )
             model.load_state_dict(checkpoint['model'], strict=True)
 
             if opts.resume:
@@ -316,7 +369,12 @@ def train(args, opts):
             exit()
 
         print(f"[INFO] epoch {epoch}")
-        loss_names = ['3d_pose', '3d_scale', '2d_proj', 'lg', 'lv', '3d_velocity', 'angle', 'angle_velocity', 'total']
+        # loss_names = ['3d_pose', '3d_scale', '2d_proj', 'lg', 'lv', '3d_velocity', 'angle', 'angle_velocity', 'total']
+        loss_names = [
+            '3d_pose', '3d_scale', '2d_proj',
+            'lg', 'lv', 'lc', 'ls',
+            '3d_velocity', 'angle', 'angle_velocity', 'total'
+        ]# ===== ===== ===== [added in 20260325]
         losses = {name: AverageMeter() for name in loss_names}
 
         train_one_epoch(args, model, train_loader, optimizer, device, losses)
@@ -340,6 +398,8 @@ def train(args, opts):
                 'train/loss_2d_proj': losses['2d_proj'].avg,
                 'train/loss_lg': losses['lg'].avg,
                 'train/loss_lv': losses['lv'].avg,
+                'train/loss_lc': losses['lc'].avg,# ===== ===== ===== [added in 20260325]
+                'train/loss_ls': losses['ls'].avg,# ===== ===== ===== [added in 20260325]
                 'train/loss_angle': losses['angle'].avg,
                 'train/angle_velocity': losses['angle_velocity'].avg,
                 'train/total': losses['total'].avg,
@@ -369,7 +429,10 @@ def main():
     set_random_seed(opts.seed)
     torch.backends.cudnn.benchmark = False
     args = get_config(opts.config)
-    
+
+    args.lambda_lc = getattr(opts, "lambda_lc", 0.0) # ===== ===== ===== [added in 20260325]
+    args.lambda_ls = getattr(opts, "lambda_ls", 0.0) # ===== ===== ===== [added in 20260325]
+
     train(args, opts)
 
 

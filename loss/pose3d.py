@@ -237,3 +237,69 @@ def loss_angle_velocity(x, gt):
     x_av = x_a[:, 1:] - x_a[:, :-1]
     gt_av = gt_a[:, 1:] - gt_a[:, :-1]
     return nn.L1Loss()(x_av, gt_av)
+
+
+def loss_limb_const(x, eps=1e-8):
+    """
+    GT非依存の骨長固定loss
+    Input: (N, T, 17, 3)
+    各サンプル・各limbについて、時間平均骨長からのズレを抑える
+    """
+    if x.shape[1] <= 1:
+        return torch.zeros((), device=x.device)
+
+    limb_lens = get_limb_lens(x)                 # (N, T, 16)
+    mean_lens = limb_lens.mean(dim=1, keepdim=True)  # (N, 1, 16)
+    return torch.mean(torch.abs(limb_lens - mean_lens))
+
+
+def loss_limb_sym(x):
+    """
+    GT非依存の左右対称loss
+    Input: (N, T, 17, 3)
+    左右対応する骨長が近くなるようにする
+    """
+    limb_lens = get_limb_lens(x)  # (N, T, 16)
+
+    # get_limb_lens() の limb index 対応
+    # 0: [0,1]   right hip? / one side of pelvis-leg chain
+    # 1: [1,2]
+    # 2: [2,3]
+    # 3: [0,4]   opposite side
+    # 4: [4,5]
+    # 5: [5,6]
+    # 10:[8,11] one arm
+    # 11:[11,12]
+    # 12:[12,13]
+    # 13:[8,14] opposite arm
+    # 14:[14,15]
+    # 15:[15,16]
+
+    sym_pairs = [
+        (0, 3),   # hip root to upper leg
+        (1, 4),   # upper leg
+        (2, 5),   # lower leg
+        (10, 13), # upper arm
+        (11, 14), # lower arm
+        (12, 15), # wrist/hand side
+    ]
+
+    losses = []
+    for a, b in sym_pairs:
+        losses.append(torch.abs(limb_lens[:, :, a] - limb_lens[:, :, b]))
+
+    return torch.mean(torch.stack(losses, dim=0))
+
+
+def loss_limb_const_relative(x, eps=1e-8):
+    """
+    相対版の骨長固定loss
+    骨長の絶対値が大きいlimbに引っ張られにくい
+    """
+    if x.shape[1] <= 1:
+        return torch.zeros((), device=x.device)
+
+    limb_lens = get_limb_lens(x)                      # (N, T, 16)
+    mean_lens = limb_lens.mean(dim=1, keepdim=True)  # (N, 1, 16)
+    rel_err = torch.abs(limb_lens - mean_lens) / (mean_lens + eps)
+    return torch.mean(rel_err)
